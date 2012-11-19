@@ -41,6 +41,6 @@ void main(void){
    gl_FragColor = clamp(ambientTerm, 0.0, 1.0) +
                   clamp(diffuseTerm, 0.0, 1.0) +
                   clamp(specularTerm, 0.0, 1.0);
-                  //diffuseTerm;
+                  //vec4(fixedNormal, 1.0);
                   
 }

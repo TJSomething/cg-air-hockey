@@ -55,6 +55,7 @@ struct Vertex
 
 enum Material {
     BLUE_PLASTIC,
+    TEXTURED_PLASTIC,
 };
 
 struct Model {
@@ -75,7 +76,7 @@ namespace Models {
     Model *puck, *table, *paddle1, *paddle2;
 }
 
-const int LIGHT_COUNT = 2;
+const int LIGHT_COUNT = 1;
 
 //--Evil Global variables
 int w = 640, h = 480;// Window size
@@ -100,9 +101,6 @@ GLint loc_shininess;
 GLint loc_light_colors;
 GLint loc_light_positions;
 GLint loc_cam_position;
-
-// These will be used to map 3D coords to uv for the wood.
-glm::vec3 wood_tex_bases[2];
 
 // Lighting info
 glm::vec3 lightColors[LIGHT_COUNT];
@@ -146,7 +144,7 @@ namespace phys {
     b2Body* table;
 }
 
-bool captureMouse = true;
+bool captureMouse = false;
 
 // Controls
 bool specialKeys[256];
@@ -216,6 +214,259 @@ int main(int argc, char **argv)
     }
 
     return 0;
+}
+
+void initKeys() {
+    for ( auto &key : specialKeys ) {
+        key = false;
+    }
+    for ( auto &key : keys ) {
+        key = false;
+    }
+}
+
+void attachModelToBuffer(GLuint &vbo, const std::vector<Vertex> &model) {
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    //std::cout << model.size() << std::endl;
+    /*for (auto v : model) {
+        std::cout << v.position[0] << std::endl;
+    }*/
+    glBufferData(GL_ARRAY_BUFFER,
+            model.size()*sizeof(Vertex),
+            model.data(),
+            GL_STATIC_DRAW);
+}
+
+bool initShaders() {
+    GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+    GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+
+    //Shader Sources
+    std::string vs = read_file("vertex.S");
+    auto vsPtr = vs.c_str();
+
+    std::string fs = read_file("fragment.S");
+    auto fsPtr = fs.c_str();
+
+    //compile the shaders
+    GLint shader_status;
+
+    // Vertex shader first
+    glShaderSource(vertex_shader, 1, &vsPtr, NULL);
+    glCompileShader(vertex_shader);
+    //check the compile status
+    glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &shader_status);
+    if(!shader_status)
+    {
+        std::cerr << "[F] FAILED TO COMPILE VERTEX SHADER!" << std::endl;
+
+        int errorLength;
+        std::unique_ptr<char[]> error;
+        glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &errorLength);
+
+        error = std::unique_ptr<char[]>(new char[errorLength]);
+        glGetShaderInfoLog(vertex_shader, errorLength, nullptr, error.get());
+
+        std::cout << error.get() << std::endl;
+
+        return false;
+    }
+
+    // Now the Fragment shader
+    glShaderSource(fragment_shader, 1, &fsPtr, NULL);
+    glCompileShader(fragment_shader);
+    //check the compile status
+    glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &shader_status);
+    if(!shader_status)
+    {
+        std::cerr << "[F] FAILED TO COMPILE FRAGMENT SHADER!" << std::endl;
+
+        int errorLength;
+        std::unique_ptr<char[]> error;
+        glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &errorLength);
+
+        error = std::unique_ptr<char[]>(new char[errorLength]);
+        glGetShaderInfoLog(fragment_shader, errorLength, nullptr, error.get());
+
+        std::cout << error.get() << std::endl;
+
+        return false;
+    }
+
+    //Now we link the 2 shader objects into a program
+    //This program is what is run on the GPU
+    program = glCreateProgram();
+    glAttachShader(program, vertex_shader);
+    glAttachShader(program, fragment_shader);
+    glLinkProgram(program);
+    //check if everything linked ok
+    glGetProgramiv(program, GL_LINK_STATUS, &shader_status);
+    if(!shader_status)
+    {
+        std::cerr << "[F] THE SHADER PROGRAM FAILED TO LINK" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+void initShaderInputLocations() {
+    //Now we set the locations of the attributes and uniforms
+    //this allows us to access them easily while rendering
+    loc_position = getGLLocation("v_position", false);
+
+    loc_color = getGLLocation("v_color", false);
+
+    loc_tex_coord = getGLLocation("v_tex_coord", false);
+
+    loc_tex_opacity = getGLLocation("v_tex_opacity", false);
+
+    loc_mvpmat = getGLLocation("mvpMatrix", true);
+
+    loc_texmap = getGLLocation("texMap", true);
+    glUniform1i(loc_texmap, 0);
+
+    loc_normal = getGLLocation("v_normal", false);
+    loc_ambient = getGLLocation("v_ambient", false);
+    loc_diffuse = getGLLocation("v_diffuse", false);
+    loc_specular = getGLLocation("v_specular", false);
+    loc_shininess = getGLLocation("v_shininess", false);
+    loc_light_colors = getGLLocation("lightColor", true);
+    loc_light_positions = getGLLocation("lightPositions", true);
+    loc_cam_position = getGLLocation("cameraPosition", true);
+    loc_to_world_mat = getGLLocation("toWorldMatrix", true);
+}
+
+void initTextures() {
+    // Bind textures
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    forAllModels([&](Model& current) {
+        glGenTextures(1, &current.textureVBO);
+        glBindTexture(GL_TEXTURE_2D, current.textureVBO);
+
+        // At repeat seam, textures are reflected. I just assume this is true
+        // for all textures. It usually looks pretty nice.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                GL_LINEAR_MIPMAP_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, current.texture.width(),
+                current.texture.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                gil::interleaved_view_get_raw_data(gil::view(current.texture)));
+        glGenerateMipmap(GL_TEXTURE_2D);
+    });
+}
+
+void initVPMatrices() {
+    //--Init the view and projection matrices
+    //  if you will be having a moving camera the view matrix will need to more dynamic
+    //  ...Like you should update it before you render more dynamic
+    //  for this project having them static will be fine
+    mats::view = glm::lookAt( cameraPosition, //Eye Position
+                        glm::vec3(0.0, 0.0, 0.0), //Focus point
+                        glm::vec3(0.0, 1.0, 0.0)); //Positive Y is up
+
+    mats::projection = glm::perspective( 45.0f, //the FoV typically 90 degrees is good which is what this is set to
+                                   float(w)/float(h), //Aspect Ratio, so Circles stay Circular
+                                   0.01f, //Distance to the near plane, normally a small value like this
+                                   100.0f); //Distance to the far plane,
+
+    mats::toWorld = glm::inverse(mats::projection * mats::view);
+}
+
+void initPhysics() {
+}
+
+void initModels () {
+    // First, the table
+
+    static const aiScene* tableScene = nullptr;
+    static Assimp::Importer Importer;
+    if (tableScene == nullptr) {
+        tableScene = Importer.ReadFile("boardtest.obj", aiProcess_FindInvalidData | aiProcess_FixInfacingNormals);
+    }
+    if (tableScene == nullptr) {
+        std::cout << Importer.GetErrorString() << std::endl;
+        throw 0;
+    }
+    geometryRoot.emplace_back(convertAssimpScene(*tableScene));
+    Models::table = &geometryRoot.back();
+    Models::table->modelMatrix = glm::scale(glm::mat4(1.0), glm::vec3(1.0,1.0,1.0));
+    //Models::table->modelMatrix = glm::translate(glm::mat4(1.0), glm::vec3{0})
+    /*forChildModels(std::list<Model*>{Models::table},
+        [](Model &m) {
+            gil::png_read_and_convert_image("Material_boardtest.png", Models::table->texture);
+            m.setMaterial(BLUE_PLASTIC);
+        });*/
+
+    // Create a Vertex Buffer object to store these vertex infos on the GPU
+    forAllModels([&](Model& current) {
+        glGenBuffers(1, &current.geometryVBO);
+        attachModelToBuffer(current.geometryVBO, current.geometry);
+    });
+}
+
+void initLightsAndCamera() {
+    // Initialize the lights and camera positions
+    cameraPosition = glm::vec3{0.0, 10.0, -10.0};
+    lightPosition[0] =
+            glm::vec3{1, 10, 1};
+    lightColors[0] = glm::vec3{1.0, 1.0, 1.0};
+}
+
+void initGLFlags() {
+    //enable depth testing
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+
+    // Antialiasing
+    glEnable(GL_MULTISAMPLE);
+
+    // Allow better keyboard control
+    glutIgnoreKeyRepeat(1);
+
+    // Disable the cursor
+    glutSetCursor(GLUT_CURSOR_NONE);
+}
+
+bool initialize()
+{
+    initKeys();
+
+    initModels();
+
+    if (!initShaders()) {
+        return false;
+    }
+    initShaderInputLocations();
+    initTextures();
+    initLightsAndCamera();
+    initVPMatrices();
+    initPhysics();
+
+
+
+    initGLFlags();
+
+
+    //and its done
+    return true;
+}
+
+void cleanUp()
+{
+    // Reset stuff
+    mouseX = 0;
+    mouseY = 0;
+    // Clean up, Clean up
+    glDeleteProgram(program);
+    forAllModels([&](Model& current) {
+        glDeleteBuffers(1, &current.geometryVBO);
+        glDeleteBuffers(1, &current.textureVBO);
+    });
+    geometryRoot.clear();
 }
 
 //--Implementations
@@ -438,234 +689,6 @@ void mouse(int button, int state, int x, int y) {
     }
 }
 
-void initKeys() {
-    for ( auto &key : specialKeys ) {
-        key = false;
-    }
-    for ( auto &key : keys ) {
-        key = false;
-    }
-}
-
-void attachModelToBuffer(GLuint &vbo, const std::vector<Vertex> &model) {
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    //std::cout << model.size() << std::endl;
-    /*for (auto v : model) {
-        std::cout << v.position[0] << std::endl;
-    }*/
-    glBufferData(GL_ARRAY_BUFFER,
-            model.size()*sizeof(Vertex),
-            model.data(),
-            GL_STATIC_DRAW);
-}
-
-bool initShaders() {
-    GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-    GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-
-    //Shader Sources
-    std::string vs = read_file("vertex.S");
-    auto vsPtr = vs.c_str();
-
-    std::string fs = read_file("fragment.S");
-    auto fsPtr = fs.c_str();
-
-    //compile the shaders
-    GLint shader_status;
-
-    // Vertex shader first
-    glShaderSource(vertex_shader, 1, &vsPtr, NULL);
-    glCompileShader(vertex_shader);
-    //check the compile status
-    glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &shader_status);
-    if(!shader_status)
-    {
-        std::cerr << "[F] FAILED TO COMPILE VERTEX SHADER!" << std::endl;
-
-        int errorLength;
-        std::unique_ptr<char[]> error;
-        glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &errorLength);
-
-        error = std::unique_ptr<char[]>(new char[errorLength]);
-        glGetShaderInfoLog(vertex_shader, errorLength, nullptr, error.get());
-
-        std::cout << error.get() << std::endl;
-
-        return false;
-    }
-
-    // Now the Fragment shader
-    glShaderSource(fragment_shader, 1, &fsPtr, NULL);
-    glCompileShader(fragment_shader);
-    //check the compile status
-    glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &shader_status);
-    if(!shader_status)
-    {
-        std::cerr << "[F] FAILED TO COMPILE FRAGMENT SHADER!" << std::endl;
-
-        int errorLength;
-        std::unique_ptr<char[]> error;
-        glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &errorLength);
-
-        error = std::unique_ptr<char[]>(new char[errorLength]);
-        glGetShaderInfoLog(fragment_shader, errorLength, nullptr, error.get());
-
-        std::cout << error.get() << std::endl;
-
-        return false;
-    }
-
-    //Now we link the 2 shader objects into a program
-    //This program is what is run on the GPU
-    program = glCreateProgram();
-    glAttachShader(program, vertex_shader);
-    glAttachShader(program, fragment_shader);
-    glLinkProgram(program);
-    //check if everything linked ok
-    glGetProgramiv(program, GL_LINK_STATUS, &shader_status);
-    if(!shader_status)
-    {
-        std::cerr << "[F] THE SHADER PROGRAM FAILED TO LINK" << std::endl;
-        return false;
-    }
-
-    return true;
-}
-
-void initShaderInputLocations() {
-    //Now we set the locations of the attributes and uniforms
-    //this allows us to access them easily while rendering
-    loc_position = getGLLocation("v_position", false);
-
-    loc_color = getGLLocation("v_color", false);
-
-    loc_tex_coord = getGLLocation("v_tex_coord", false);
-
-    loc_tex_opacity = getGLLocation("v_tex_opacity", false);
-
-    loc_mvpmat = getGLLocation("mvpMatrix", true);
-
-    loc_texmap = getGLLocation("texMap", true);
-    glUniform1i(loc_texmap, 0);
-
-    loc_normal = getGLLocation("v_normal", false);
-    loc_ambient = getGLLocation("v_ambient", false);
-    loc_diffuse = getGLLocation("v_diffuse", false);
-    loc_specular = getGLLocation("v_specular", false);
-    loc_shininess = getGLLocation("v_shininess", false);
-    loc_light_colors = getGLLocation("lightColor", true);
-    loc_light_positions = getGLLocation("lightPositions", true);
-    loc_cam_position = getGLLocation("cameraPosition", true);
-    loc_to_world_mat = getGLLocation("toWorldMatrix", true);
-}
-
-void initTextures() {
-    // Bind textures
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-    forAllModels([&](Model& current) {
-        glGenTextures(1, &current.textureVBO);
-        glBindTexture(GL_TEXTURE_2D, current.textureVBO);
-
-        // At repeat seam, textures are reflected. I just assume this is true
-        // for all textures. It usually looks pretty nice.
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                GL_LINEAR_MIPMAP_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, current.texture.width(),
-                current.texture.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                gil::interleaved_view_get_raw_data(gil::view(current.texture)));
-        glGenerateMipmap(GL_TEXTURE_2D);
-    });
-}
-
-void initVPMatrices() {
-    //--Init the view and projection matrices
-    //  if you will be having a moving camera the view matrix will need to more dynamic
-    //  ...Like you should update it before you render more dynamic
-    //  for this project having them static will be fine
-    mats::view = glm::lookAt( cameraPosition, //Eye Position
-                        glm::vec3(0.0, 0.0, 0.0), //Focus point
-                        glm::vec3(0.0, 1.0, 0.0)); //Positive Y is up
-
-    mats::projection = glm::perspective( 45.0f, //the FoV typically 90 degrees is good which is what this is set to
-                                   float(w)/float(h), //Aspect Ratio, so Circles stay Circular
-                                   0.01f, //Distance to the near plane, normally a small value like this
-                                   100.0f); //Distance to the far plane,
-
-    mats::toWorld = glm::inverse(mats::projection * mats::view);
-}
-
-void initPhysics() {
-}
-
-void initModels () {
-    // Create a Vertex Buffer object to store these vertex infos on the GPU
-    forAllModels([&](Model& current) {
-        glGenBuffers(1, &current.geometryVBO);
-        attachModelToBuffer(current.geometryVBO, current.geometry);
-    });
-}
-
-void initLightsAndCamera() {
-    // Initialize the lights and camera positions
-}
-
-void initGLFlags() {
-    //enable depth testing
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-
-    // Antialiasing
-    glEnable(GL_MULTISAMPLE);
-
-    // Allow better keyboard control
-    glutIgnoreKeyRepeat(1);
-
-    // Disable the cursor
-    glutSetCursor(GLUT_CURSOR_NONE);
-}
-
-bool initialize()
-{
-    initKeys();
-
-    initModels();
-
-    if (!initShaders()) {
-        return false;
-    }
-    initShaderInputLocations();
-    initTextures();
-    initLightsAndCamera();
-    initVPMatrices();
-    initPhysics();
-
-
-
-    initGLFlags();
-
-
-    //and its done
-    return true;
-}
-
-void cleanUp()
-{
-    // Reset stuff
-    mouseX = 0;
-    mouseY = 0;
-    // Clean up, Clean up
-    glDeleteProgram(program);
-    forAllModels([&](Model& current) {
-        glDeleteBuffers(1, &current.geometryVBO);
-        glDeleteBuffers(1, &current.textureVBO);
-    });
-    geometryRoot.clear();
-}
-
 //returns the time delta
 float getDT()
 {
@@ -677,8 +700,6 @@ float getDT()
 }
 
 Vertex makeVertex(Material m, glm::vec3 pos, glm::vec3 normal) {
-    auto woodTexCoord = glm::vec2{glm::dot(pos, wood_tex_bases[0]),
-        glm::dot(pos, wood_tex_bases[1])}*0.1f;
     switch (m) {
     case BLUE_PLASTIC:
         return Vertex{
@@ -686,6 +707,20 @@ Vertex makeVertex(Material m, glm::vec3 pos, glm::vec3 normal) {
             BALL_COLOR,
             {0,0},
             0,
+            {normal.x, normal.y, normal.z},
+            {0.4, 0.4, 0.4},
+            {0.7, 0.7, 0.7},
+            {.7, .7, .7},
+            {0, 0, 0},
+            15
+        };
+        break;
+    case TEXTURED_PLASTIC:
+        return Vertex{
+            {pos.x, pos.y, pos.z},
+            {1.0, 1.0, 1.0},
+            {0,0},
+            1,
             {normal.x, normal.y, normal.z},
             {0.4, 0.4, 0.4},
             {0.7, 0.7, 0.7},
@@ -935,8 +970,11 @@ Model::Model() {
 
 void Model::setMaterial(Material m) {
     for (auto &v : geometry) {
+        auto oldV = v;
         v = makeVertex(m,
                        glm::vec3{v.position[0], v.position[1], v.position[2]},
                        glm::vec3{v.normal[0], v.normal[1], v.normal[2]});
+        v.tex_coord[0] = oldV.tex_coord[0];
+        v.tex_coord[1] = oldV.tex_coord[1];
     }
 }

@@ -1,0 +1,24 @@
+# Blender MTL File: 'boardtest.blend'
+# Material Count: 2
+newmtl Material
+Ns 96.078431
+Ka 0.10000 0.100000 0.100000
+Kd 0.2 0.2 0.2 
+Ks 0.500000 0.500000 0.500000
+Ni 1.000000
+d 1.000000
+illum 2
+map_Kd boardtest3.png
+
+
+newmtl Material_boardtest.png
+Ns 96.078431
+Ka 0.100000 0.100000 0.100000
+Kd 0.2 0.2 0.2
+Ks 0.500000 0.500000 0.500000
+Ni 1.000000
+d 1.000000
+illum 2
+map_Kd boardtest3.png
+
+
