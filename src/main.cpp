@@ -18,6 +18,11 @@
 #include <boost/gil/gil_all.hpp>
 #include <boost/gil/extension/io/png_io.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/geometry.hpp>
+#include <boost/geometry/geometries/polygon.hpp>
+#include <boost/geometry/geometries/register/point.hpp>
+#include <boost/geometry/geometries/linestring.hpp>
+#include <boost/geometry/geometries/ring.hpp>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -33,6 +38,10 @@
 
 #include "read_file.h"
 #include "make_unique.hpp"
+
+BOOST_GEOMETRY_REGISTER_POINT_2D(b2Vec2, float32, cs::cartesian, x, y)
+
+typedef boost::geometry::model::polygon<b2Vec2> polygon;
 
 namespace fs = boost::filesystem;
 namespace gil = boost::gil;
@@ -76,7 +85,11 @@ namespace Models {
     Model *puck, *table, *paddle1, *paddle2;
 }
 
+// Things that we need to know
+GLfloat puckY;
 const int LIGHT_COUNT = 1;
+GLfloat puckRadius;
+const GLfloat goalWidthFraction = 0.3;
 
 //--Evil Global variables
 int w = 640, h = 480;// Window size
@@ -377,6 +390,134 @@ void initVPMatrices() {
 }
 
 void initPhysics() {
+	// Find the table edge
+	polygon tablePoints;
+	polygon tableEdge;
+	b2Vec2 tableCenter;
+	GLfloat tableHeight = -1000;
+	forChildModels(std::list<Model*>{Models::table},
+		[&](Model &m) {
+			for (auto pt : m.geometry) {
+				tablePoints.outer().push_back(
+						b2Vec2{pt.position[0], pt.position[2]});
+				tableHeight = std::max(puckY, pt.position[1]);
+			}
+		});
+
+	boost::geometry::convex_hull(tablePoints, tableEdge);
+
+	// And the center of the table
+	boost::geometry::centroid(tableEdge, tableCenter);
+
+	// Cut out the goals from the edge
+	boost::geometry::model::box<b2Vec2> tableBounds;
+	boost::geometry::envelope(tableEdge, tableBounds);
+	polygon goalMask[2];
+
+	goalMask[0].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.min_corner().x - tableCenter.x),
+		       2.0f*(tableBounds.max_corner().y - tableCenter.y)} +
+		tableCenter);
+	goalMask[0].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.min_corner().x - tableCenter.x),
+		       -(goalWidthFraction)*(tableBounds.max_corner().y - tableCenter.y)} +
+		tableCenter);
+	goalMask[0].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.max_corner().x - tableCenter.x),
+		       -(goalWidthFraction)*(tableBounds.max_corner().y - tableCenter.y)} +
+		tableCenter);
+	goalMask[0].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.max_corner().x - tableCenter.x),
+		       2.0f*(tableBounds.max_corner().y - tableCenter.y)} +
+		tableCenter);
+
+	goalMask[1].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.max_corner().x - tableCenter.x),
+		       2.0f*(tableBounds.min_corner().y - tableCenter.y)} +
+		tableCenter);
+	goalMask[1].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.max_corner().x - tableCenter.x),
+		       -(goalWidthFraction)*(tableBounds.min_corner().y - tableCenter.y)} +
+		tableCenter);
+	goalMask[1].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.min_corner().x - tableCenter.x),
+		       -(goalWidthFraction)*(tableBounds.min_corner().y - tableCenter.y)} +
+		tableCenter);
+	goalMask[1].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.min_corner().x - tableCenter.x),
+		       2.0f*(tableBounds.min_corner().y - tableCenter.y)} +
+		tableCenter);
+
+	std::vector<polygon> tableSides[2];
+	boost::geometry::intersection(tableEdge, goalMask[0], tableSides[0]);
+	boost::geometry::intersection(tableEdge, goalMask[1], tableSides[1]);
+
+	// Find the puck's radius by finding the point on the edge furthest from
+	//  the center
+	polygon puckPoints, puckEdge;
+	b2Vec2 puckCenter;
+	GLfloat puckBottom = 1000.0;
+	forChildModels(std::list<Model*>{Models::puck},
+		[&](Model &m) {
+			for (auto pt : m.geometry) {
+				puckPoints.outer().push_back(
+						b2Vec2{pt.position[0], pt.position[2]});
+				puckBottom = std::min(puckBottom, pt.position[1]);
+			}
+		});
+
+	// TODO: Save this somewhere for resetting
+	puckY = tableHeight - puckBottom;
+
+	boost::geometry::convex_hull(puckPoints, puckEdge);
+	boost::geometry::centroid(puckEdge, puckCenter);
+	puckRadius = 0;
+	for (auto pt : puckEdge.outer()) {
+		puckRadius = std::max(puckRadius, b2Distance(pt, puckCenter));
+	}
+
+    // Setup physics
+    // Puck
+    b2BodyDef puckBodyDef;
+    b2CircleShape puckShape;
+    b2FixtureDef fixtureDef;
+
+    puckBodyDef.type = b2_dynamicBody;
+    puckBodyDef.linearDamping = 0.008f;
+    puckBodyDef.position = tableCenter;
+    phys::puck = phys::world.CreateBody(&puckBodyDef);
+
+    puckShape.m_radius = puckRadius;
+
+    fixtureDef.shape = &puckShape;
+    fixtureDef.density = 1.0f;
+    fixtureDef.friction = 0.001f;
+    fixtureDef.restitution = 0.9f;
+
+    phys::puck->CreateFixture(&fixtureDef);
+
+    // TODO: Refactor into resetPuck function
+    phys::puck->SetTransform(tableCenter, 0);
+    phys::puck->ApplyLinearImpulse(b2Vec2{.5,0.25}, phys::puck->GetWorldCenter());
+
+    // Table
+    b2BodyDef tableBodyDef;
+    phys::table = phys::world.CreateBody(&tableBodyDef);
+
+    // A terrible hack
+    tableSides[0][0].outer().insert(tableSides[0][0].outer().begin(),
+    		tableSides[0][0].outer().back());
+    tableSides[0][0].outer().pop_back();
+    tableSides[1][0].outer().push_back(tableSides[1][0].outer().front());
+    tableSides[1][0].outer().erase(tableSides[1][0].outer().begin());
+
+    std::vector<b2ChainShape> tableSideShapes(2);
+    for (int i = 0; i < 2; i++) {
+		tableSideShapes[i].CreateChain(tableSides[i][0].outer().data(),
+				tableSides[i][0].outer().size());
+		phys::table->CreateFixture(&tableSideShapes[i], 0.0f);
+    }
+
 }
 
 void initModels () {
@@ -400,6 +541,27 @@ void initModels () {
             gil::png_read_and_convert_image("Material_boardtest.png", Models::table->texture);
             m.setMaterial(BLUE_PLASTIC);
         });*/
+
+    //Puck
+    static const aiScene* puckScene = nullptr;
+    if (puckScene == nullptr) {
+        puckScene = Importer.ReadFile("puck.obj", aiProcess_FindInvalidData | aiProcess_FixInfacingNormals);
+    }
+    if (puckScene == nullptr) {
+        std::cout << Importer.GetErrorString() << std::endl;
+        throw 0;
+    }
+    geometryRoot.emplace_back(convertAssimpScene(*puckScene));
+    Models::puck = &geometryRoot.back();
+    Models::puck->modelMatrix = glm::scale(glm::mat4(1.0), glm::vec3(1,1,1));
+    forChildModels(std::list<Model*>{Models::puck},
+    		[&](Model& m) {
+    			for (auto &pt : m.geometry) {
+    				pt.position[0] *= 0.1;
+    				pt.position[1] *= 0.1;
+    				pt.position[2] *= 0.1;
+    			}
+    		});
 
     // Create a Vertex Buffer object to store these vertex infos on the GPU
     forAllModels([&](Model& current) {
@@ -605,6 +767,12 @@ void update() {
     float dt = getDT();// if you have anything moving, use dt.
 
     // Call functions that update based on what's going on
+    Models::puck->modelMatrix =
+    		glm::translate(glm::mat4(1.0),
+    				glm::vec3(phys::puck->GetPosition().x,
+    						puckY,
+    						phys::puck->GetPosition().y));
+    phys::world.Step(dt, 8, 3);
 
     glutPostRedisplay();
 }
