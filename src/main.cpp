@@ -526,7 +526,7 @@ void initModels () {
     static const aiScene* tableScene = nullptr;
     static Assimp::Importer Importer;
     if (tableScene == nullptr) {
-        tableScene = Importer.ReadFile("boardtest.obj", aiProcess_FindInvalidData | aiProcess_FixInfacingNormals);
+        tableScene = Importer.ReadFile("boardtest4.obj", aiProcess_FindInvalidData | aiProcess_FixInfacingNormals);
     }
     if (tableScene == nullptr) {
         std::cout << Importer.GetErrorString() << std::endl;
@@ -575,7 +575,7 @@ void initLightsAndCamera() {
     cameraPosition = glm::vec3{0.0, 10.0, -10.0};
     lightPosition[0] =
             glm::vec3{1, 10, 1};
-    lightColors[0] = glm::vec3{1.0, 1.0, 1.0};
+    lightColors[0] = glm::vec3{3.0, 3.0, 3.0};
 }
 
 void initGLFlags() {
