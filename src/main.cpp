@@ -24,6 +24,7 @@
 #include <boost/geometry/geometries/linestring.hpp>
 #include <boost/geometry/geometries/ring.hpp>
 #include <boost/geometry/multi/geometries/multi_point.hpp>
+#include <boost/geometry/views/box_view.hpp>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -515,25 +516,31 @@ void initPhysics() {
 	boost::geometry::intersection(tableEdge, goalMask[0], tableSides[0]);
 	boost::geometry::intersection(tableEdge, goalMask[1], tableSides[1]);
 
-	// We also need to bind the paddles to their sides
-	std::vector<polygon> paddleSides(2), sideMask(2);
+    // Rotate the arrays such that the insides don't block the puck
+    std::stable_sort(tableSides[0][0].outer().begin(),
+    		tableSides[0][0].outer().end(),
+			[=](b2Vec2 pt1, b2Vec2 pt2){return pt1.x<pt2.x;});
+    std::stable_sort(tableSides[1][0].outer().begin(),
+    		tableSides[1][0].outer().end(),
+			[=](b2Vec2 pt1, b2Vec2 pt2){return pt1.x<pt2.x;});
 
-	sideMask[0].outer().push_back(
-		b2Vec2{2.0f*(tableBounds.min_corner().x - tableCenter.x),
-		       2.0f*(tableBounds.max_corner().y - tableCenter.y)} +
-		tableCenter);
-	sideMask[0].outer().push_back(
-		b2Vec2{2.0f*(tableBounds.min_corner().x - tableCenter.x),
-		       -(goalWidthFraction)*(tableBounds.max_corner().y - tableCenter.y)} +
-		tableCenter);
-	sideMask[0].outer().push_back(
-		b2Vec2{2.0f*(tableBounds.max_corner().x - tableCenter.x),
-		       -(goalWidthFraction)*(tableBounds.max_corner().y - tableCenter.y)} +
-		tableCenter);
-	sideMask[0].outer().push_back(
-		b2Vec2{2.0f*(tableBounds.max_corner().x - tableCenter.x),
-		       2.0f*(tableBounds.max_corner().y - tableCenter.y)} +
-		tableCenter);
+	// We also need to bind the paddles to their sides
+	boost::geometry::model::box<b2Vec2> sideMask[2];
+	polygon paddleSides[2];
+
+	sideMask[0].max_corner() = tableBounds.max_corner();
+	sideMask[0].min_corner() =
+			b2Vec2{tableCenter.x, tableBounds.min_corner().y};
+	boost::geometry::correct(sideMask[0]);
+
+	sideMask[1].max_corner() =
+			b2Vec2{tableCenter.x, tableBounds.max_corner().y};
+	sideMask[1].min_corner() = tableBounds.max_corner();
+	boost::geometry::correct(sideMask[1]);
+
+	for (int i = 0; i < 2; i++)
+		boost::geometry::intersection(tableEdge,
+				boost::geometry::box_view<boost::geometry::model::box<b2Vec2>>(sideMask[i]), paddleSides[i]);
 
     // Puck
 	// Find the puck's radius by finding the point on the edge furthest from
@@ -585,19 +592,15 @@ void initPhysics() {
     b2BodyDef tableBodyDef;
     phys::table = phys::world.CreateBody(&tableBodyDef);
 
-    // Rotate the arrays such that
-    std::stable_sort(tableSides[0][0].outer().begin(),
-    		tableSides[0][0].outer().end(),
-			[=](b2Vec2 pt1, b2Vec2 pt2){return pt1.x<pt2.x;});
-    std::stable_sort(tableSides[1][0].outer().begin(),
-    		tableSides[1][0].outer().end(),
-			[=](b2Vec2 pt1, b2Vec2 pt2){return pt1.x<pt2.x;});
-
     std::vector<b2ChainShape> tableSideShapes(2);
+    std::vector<b2ChainShape> paddleBoundaryShapes(2);
     for (int i = 0; i < 2; i++) {
 		tableSideShapes[i].CreateChain(tableSides[i][0].outer().data(),
 				tableSides[i][0].outer().size());
 		phys::table->CreateFixture(&tableSideShapes[i], 0.0f);
+		paddleBoundaryShapes[i].CreateChain(paddleSides[i].outer().data(),
+				paddleSides[i].outer().size());
+		auto x = phys::table->CreateFixture(&paddleBoundaryShapes[i], 0.0f);
     }
 
     // Paddles
@@ -796,6 +799,25 @@ void cleanUp()
     geometryRoot.clear();
 }
 
+
+void glutPrint(float x, float y, void* font, const char* text, float r, float g,
+        float b, float a)
+{
+    if(!text || !strlen(text)) return;
+    bool blending = false;
+    if(glIsEnabled(GL_BLEND)) blending = true;
+    glEnable(GL_BLEND);
+    glColor4f(r,g,b,a);
+    int width = glutBitmapLength(font, (unsigned char*) text);
+    //printf("%d\n", width);
+    glRasterPos2f(x-float(width)/float(w),y);
+    while (*text) {
+        glutBitmapCharacter(font, *text);
+        text++;
+    }
+    if(!blending) glDisable(GL_BLEND);
+}
+
 //--Implementations
 void render()
 {
@@ -922,6 +944,9 @@ void render()
     glDisableVertexAttribArray(loc_specular);
     glDisableVertexAttribArray(loc_shininess);
     glBindTexture(GL_TEXTURE_2D, 0);
+
+    glUseProgram(0);
+    glutPrint(0.0f, -0.9f, GLUT_BITMAP_TIMES_ROMAN_24, "P1: 1   P2: 3", 1.0f, 1.0f, 1.0f, 0.5f);
 
     //swap the buffers
     glutSwapBuffers();
