@@ -23,6 +23,7 @@
 #include <boost/geometry/geometries/register/point.hpp>
 #include <boost/geometry/geometries/linestring.hpp>
 #include <boost/geometry/geometries/ring.hpp>
+#include <boost/geometry/multi/geometries/multi_point.hpp>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -390,24 +391,83 @@ void initVPMatrices() {
 }
 
 void initPhysics() {
-	// Find the table edge
+	// Find the table's height
 	polygon tablePoints;
-	polygon tableEdge;
+	boost::geometry::model::ring<b2Vec2> tableEdge;
+	polygon lipPoints;
+	std::vector<b2Vec2> innerLipPoints;
 	b2Vec2 tableCenter;
-	GLfloat tableHeight = -1000;
+	std::set<GLfloat> tableHeights;
 	forChildModels(std::list<Model*>{Models::table},
 		[&](Model &m) {
 			for (auto pt : m.geometry) {
-				tablePoints.outer().push_back(
-						b2Vec2{pt.position[0], pt.position[2]});
-				tableHeight = std::max(puckY, pt.position[1]);
+				if (fabs(pt.normal[0]) < 0.01f && pt.normal[1] > 0.99f && fabs(pt.normal[2]) < 0.01f)
+					tableHeights.insert(pt.position[1]);
 			}
 		});
 
-	boost::geometry::convex_hull(tablePoints, tableEdge);
 
-	// And the center of the table
-	boost::geometry::centroid(tableEdge, tableCenter);
+	// And the height of the table
+	auto heightFinder = tableHeights.rbegin();
+	GLfloat maxHeight = *heightFinder;
+	while (*heightFinder > maxHeight - 0.1)
+		heightFinder++;
+	GLfloat tableHeight = *heightFinder;
+
+	// Then the edge of the table
+	forChildModels(std::list<Model*>{Models::table},
+		[&](Model &m) {
+			for (auto pt : m.geometry) {
+				if (abs(pt.position[1]-tableHeight) < 0.01)
+					tablePoints.outer().push_back(
+							b2Vec2{pt.position[0], pt.position[2]});
+
+				if (pt.position[1] > tableHeight + 0.1)
+					lipPoints.outer().push_back(
+							b2Vec2{pt.position[0], pt.position[2]});
+			}
+		});
+
+	// Get the outside points of the surface
+	polygon tablePoints2 = tablePoints;
+	tablePoints.clear();
+	boost::geometry::convex_hull(tablePoints2, tablePoints);
+
+	// Get center of the center of the table
+	boost::geometry::centroid(tablePoints, tableCenter);
+
+	// Find the points of the lip that are above the table
+	boost::geometry::intersection(lipPoints, tablePoints, innerLipPoints);
+
+	// To make other functions better behaved, sort the points by their
+	//  angle from the center of the table
+	std::sort(innerLipPoints.begin(), innerLipPoints.end(),
+			[=](b2Vec2 pt1, b2Vec2 pt2){
+				b2Vec2 diff1 = pt1 - tableCenter;
+				b2Vec2 diff2 = pt2 - tableCenter;
+				return atan2(diff1.y, diff1.x) < atan2(diff2.y, diff2.x);
+			});
+	boost::geometry::model::ring<b2Vec2> innerLip(innerLipPoints.begin(),
+			innerLipPoints.end());
+	boost::geometry::correct(innerLip);
+	boost::geometry::convex_hull(innerLip, tableEdge);
+
+	// We need to fix some table normals
+	forChildModels(std::list<Model*>{Models::table},
+		[&](Model &m) {
+			for (auto &pt : m.geometry) {
+				if (fabs(pt.position[1]-tableHeight) < 0.01) {
+					pt.normal[0] = 0.0;
+					pt.normal[1] = 1.0;
+					pt.normal[2] = 0.0;
+				}
+			}
+			m.drawMode = GL_TRIANGLES;
+		});
+
+    forAllModels([&](Model& current) {
+        attachModelToBuffer(current.geometryVBO, current.geometry);
+    });
 
 	// Cut out the goals from the edge
 	boost::geometry::model::box<b2Vec2> tableBounds;
@@ -467,6 +527,7 @@ void initPhysics() {
 		});
 
 	// TODO: Save this somewhere for resetting
+
 	puckY = tableHeight - puckBottom;
 
 	boost::geometry::convex_hull(puckPoints, puckEdge);
@@ -504,12 +565,13 @@ void initPhysics() {
     b2BodyDef tableBodyDef;
     phys::table = phys::world.CreateBody(&tableBodyDef);
 
-    // A terrible hack
-    tableSides[0][0].outer().insert(tableSides[0][0].outer().begin(),
-    		tableSides[0][0].outer().back());
-    tableSides[0][0].outer().pop_back();
-    tableSides[1][0].outer().push_back(tableSides[1][0].outer().front());
-    tableSides[1][0].outer().erase(tableSides[1][0].outer().begin());
+    // Rotate the arrays such that
+    std::stable_sort(tableSides[0][0].outer().begin(),
+    		tableSides[0][0].outer().end(),
+			[=](b2Vec2 pt1, b2Vec2 pt2){return pt1.x<pt2.x;});
+    std::stable_sort(tableSides[1][0].outer().begin(),
+    		tableSides[1][0].outer().end(),
+			[=](b2Vec2 pt1, b2Vec2 pt2){return pt1.x<pt2.x;});
 
     std::vector<b2ChainShape> tableSideShapes(2);
     for (int i = 0; i < 2; i++) {
@@ -526,7 +588,7 @@ void initModels () {
     static const aiScene* tableScene = nullptr;
     static Assimp::Importer Importer;
     if (tableScene == nullptr) {
-        tableScene = Importer.ReadFile("boardtest4.obj", aiProcess_FindInvalidData | aiProcess_FixInfacingNormals);
+        tableScene = Importer.ReadFile("boardtest4.obj", aiProcess_Triangulate | aiProcess_FixInfacingNormals | aiProcess_GenSmoothNormals);
     }
     if (tableScene == nullptr) {
         std::cout << Importer.GetErrorString() << std::endl;
@@ -545,7 +607,7 @@ void initModels () {
     //Puck
     static const aiScene* puckScene = nullptr;
     if (puckScene == nullptr) {
-        puckScene = Importer.ReadFile("puck.obj", aiProcess_FindInvalidData | aiProcess_FixInfacingNormals);
+        puckScene = Importer.ReadFile("puck.obj", aiProcess_Triangulate | aiProcess_FindInvalidData | aiProcess_FixInfacingNormals | aiProcess_GenSmoothNormals);
     }
     if (puckScene == nullptr) {
         std::cout << Importer.GetErrorString() << std::endl;
@@ -560,6 +622,13 @@ void initModels () {
     				pt.position[0] *= 0.1;
     				pt.position[1] *= 0.1;
     				pt.position[2] *= 0.1;
+    				pt = makeVertex(BLUE_PLASTIC,
+    						glm::vec3{pt.position[0],
+    					              pt.position[1],
+    					              pt.position[2]},
+							glm::vec3{pt.normal[0],
+									  pt.normal[1],
+									  pt.normal[2]});
     			}
     		});
 
@@ -572,10 +641,10 @@ void initModels () {
 
 void initLightsAndCamera() {
     // Initialize the lights and camera positions
-    cameraPosition = glm::vec3{0.0, 10.0, -10.0};
+    cameraPosition = glm::vec3{0.0, 10, -10.0};
     lightPosition[0] =
             glm::vec3{1, 10, 1};
-    lightColors[0] = glm::vec3{3.0, 3.0, 3.0};
+    lightColors[0] = glm::vec3{1.0, 1.0, 1.0};
 }
 
 void initGLFlags() {
@@ -980,8 +1049,6 @@ Vertex getMaterial(const aiMaterial &mtl) {
         result.shininess = shininess;
     } else {
       result.shininess = 0;
-      for (int i = 0; i < 3; i++)
-        result.emission[i] = 0.0f;
     }
 
     return result;
@@ -1068,6 +1135,10 @@ Model convertAssimpScene (const aiScene &sc) {
                         v.color[0] = mesh->mColors[0][index].r;
                         v.color[1] = mesh->mColors[0][index].g;
                         v.color[2] = mesh->mColors[0][index].b;
+                    } else {
+                    	v.color[0] = 0.8;
+                    	v.color[1] = 0.8;
+                    	v.color[2] = 0.8;
                     }
                     if(mesh->mNormals != nullptr) {
                         v.normal[0] = mesh->mNormals[index].x;
@@ -1082,6 +1153,10 @@ Model convertAssimpScene (const aiScene &sc) {
                         v.tex_coord[0] = mesh->mTextureCoords[0][index].x;
                         v.tex_coord[1] = 1-mesh->mTextureCoords[0][index].y;
                         v.tex_opacity = 1;
+                    } else {
+                    	v.tex_coord[0] = 0;
+                    	v.tex_coord[1] = 0;
+                    	v.tex_opacity = 0;
                     }
 
                     meshModel->geometry.push_back(v);
