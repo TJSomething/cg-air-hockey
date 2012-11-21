@@ -98,6 +98,7 @@ const GLfloat goalWidthFraction = 0.3;
 GLfloat tableLeft, tableRight;
 b2Vec2 tableCenter;
 int score[2] = {0,0};
+bool matchOver = false;
 
 //--Evil Global variables
 int w = 640, h = 480;// Window size
@@ -403,6 +404,7 @@ void resetPuck() {
     puckYVel = 0;
     phys::puck->SetTransform(tableCenter, 0);
     phys::puck->ApplyLinearImpulse(b2Vec2{.1,0.05}, phys::puck->GetWorldCenter());
+    matchOver = false;
 }
 
 void initPhysics() {
@@ -557,6 +559,10 @@ void initPhysics() {
 	    auto boxView = geo::box_view<geo::model::box<b2Vec2>>(sideMask[i]);
 		geo::intersection(tableEdge, sideMask[i], paddleSides[i]);
 	}
+
+	// Remember the sides of the table
+	tableLeft = tableBounds.min_corner().x;
+	tableRight = tableBounds.max_corner().x;
 
     // Puck
 	// Find the puck's radius by finding the point on the edge furthest from
@@ -980,11 +986,21 @@ void render()
 }
 
 void updateMatrices() {
+    auto puckPosition =
     Models::puck->modelMatrix =
     		glm::translate(glm::mat4(1.0),
     				glm::vec3(phys::puck->GetPosition().x,
     						puckY,
-    						phys::puck->GetPosition().y));
+    						phys::puck->GetPosition().y)) *
+    		glm::rotate(glm::mat4(1.0),
+    		        float(atanf(puckYVel)/M_PI*180.0f),
+    		        glm::normalize(
+    		                glm::cross(
+    		                        glm::vec3(
+    		                                phys::puck->GetLinearVelocity().x,
+    		                                puckYVel,
+    		                                phys::puck->GetLinearVelocity().y),
+    		                        glm::vec3(0.0,1.0,0.0))));
     Models::paddle1->modelMatrix =
     		glm::translate(glm::mat4(1.0),
     				glm::vec3(phys::paddle1->GetPosition().x,
@@ -997,7 +1013,7 @@ void updateMatrices() {
     						phys::paddle2->GetPosition().y));
 }
 
-void updatePositions(GLfloat dt) {
+void updateControls(GLfloat dt) {
     static int previousMouseX = 0, previousMouseY = 0;
 
     b2Vec2 paddleVelocities[2] = {b2Vec2_zero, b2Vec2_zero};
@@ -1038,13 +1054,40 @@ void updatePositions(GLfloat dt) {
     phys::paddle2->SetLinearVelocity(paddleVelocities[1]);
 }
 
+void checkForGoal() {
+    if (!matchOver) {
+        if (phys::puck->GetPosition().x < tableLeft) {
+            score[1]++;
+            matchOver = true;
+        }
+        if (phys::puck->GetPosition().x > tableRight) {
+            score[0]++;
+            matchOver = true;
+        }
+    } else {
+        if (puckY < -10.0) {
+            resetPuck();
+        }
+    }
+}
+
+void updateVerticalPhysics(float dt) {
+    if (matchOver) {
+        puckY += dt*puckYVel/2;
+        puckYVel -= 9.8*dt;
+        puckY += dt*puckYVel/2;
+    }
+}
+
 void update() {
     float dt = getDT();// if you have anything moving, use dt.
 
     updateMatrices();
-    updatePositions(dt);
+    updateControls(dt);
+    checkForGoal();
 
     // Call functions that update based on what's going on
+    updateVerticalPhysics(dt);
     phys::world.Step(dt, 8, 3);
 
     glutPostRedisplay();
