@@ -793,9 +793,6 @@ void initGLFlags() {
 
     // Allow better keyboard control
     glutIgnoreKeyRepeat(1);
-
-    // Disable the cursor
-    glutSetCursor(GLUT_CURSOR_NONE);
 }
 
 bool initialize()
@@ -983,7 +980,11 @@ void render()
     glBindTexture(GL_TEXTURE_2D, 0);
 
     glUseProgram(0);
-    glutPrint(0.0f, -0.9f, GLUT_BITMAP_TIMES_ROMAN_24, "P1: 1   P2: 3", 1.0f, 1.0f, 1.0f, 0.5f);
+    glutPrint(-0.9f, -0.9f, GLUT_BITMAP_TIMES_ROMAN_24, std::to_string(score[1]).c_str(),
+            1.0f, 1.0f, 1.0f, 0.5f);
+    glutPrint(0.9f, -0.9f, GLUT_BITMAP_TIMES_ROMAN_24,
+            std::to_string(score[0]).c_str(),
+            1.0f, 1.0f, 1.0f, 0.5f);
 
     //swap the buffers
     glutSwapBuffers();
