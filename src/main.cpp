@@ -99,6 +99,7 @@ GLfloat tableLeft, tableRight;
 b2Vec2 tableCenter;
 int score[2] = {0,0};
 bool matchOver = false;
+GLfloat theta = -M_PI/2, phi = M_PI/4, r = 10;
 
 //--Evil Global variables
 int w = 640, h = 480;// Window size
@@ -382,13 +383,15 @@ void initTextures() {
     });
 }
 
-void initVPMatrices() {
+void updateVPMatrices() {
+	auto center = glm::vec3(tableCenter.x, puckYStart, tableCenter.y);
+	cameraPosition = center + glm::vec3(r*cos(theta)*cos(phi), r*sin(phi), r*sin(theta)*cos(phi));
     //--Init the view and projection matrices
     //  if you will be having a moving camera the view matrix will need to more dynamic
     //  ...Like you should update it before you render more dynamic
     //  for this project having them static will be fine
     mats::view = glm::lookAt( cameraPosition, //Eye Position
-                        glm::vec3(0.0, 0.0, 0.0), //Focus point
+                        glm::vec3(tableCenter.x, puckYStart, tableCenter.y), //Focus point
                         glm::vec3(0.0, 1.0, 0.0)); //Positive Y is up
 
     mats::projection = glm::perspective( 45.0f, //the FoV typically 90 degrees is good which is what this is set to
@@ -807,7 +810,7 @@ bool initialize()
     initShaderInputLocations();
     initTextures();
     initLightsAndCamera();
-    initVPMatrices();
+    updateVPMatrices();
     initPhysics();
 
 
@@ -1057,6 +1060,15 @@ void updateControls(GLfloat dt) {
 
     phys::paddle1->SetLinearVelocity(paddleVelocities[0]);
     phys::paddle2->SetLinearVelocity(paddleVelocities[1]);
+
+    if (keys['i'])
+    	phi += dt*2.0;
+    if (keys['k'])
+    	phi -= dt*2.0;
+    if (keys['j'])
+    	theta += dt*2.0;
+    if (keys['l'])
+    	theta -= dt*2.0;
 }
 
 void checkForGoal() {
@@ -1091,6 +1103,7 @@ void update() {
 
     updateMatrices();
     updateControls(dt);
+    updateVPMatrices();
     checkForGoal();
 
     // Call functions that update based on what's going on
@@ -1450,11 +1463,11 @@ void forChildModels(std::list<Model*> root, std::function<void (Model &)> f) {
         Model* m = modelStack.top();
         modelStack.pop();
 
-        f(*m);
+		f(*m);
 
-        for (auto &child : m->children) {
-            modelStack.push(&child);
-        }
+		for (auto &child : m->children) {
+			modelStack.push(&child);
+		}
     }
 }
 
