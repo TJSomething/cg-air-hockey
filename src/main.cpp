@@ -87,9 +87,9 @@ namespace Models {
 }
 
 // Things that we need to know
-GLfloat puckY;
+GLfloat puckY, paddleY;
 const int LIGHT_COUNT = 1;
-GLfloat puckRadius;
+GLfloat puckRadius, paddleRadius;
 const GLfloat goalWidthFraction = 0.3;
 
 //--Evil Global variables
@@ -164,7 +164,7 @@ bool captureMouse = false;
 bool specialKeys[256];
 bool keys[256];
 int mouseX = 0, mouseY = 0;
-float keyboardSensitivity = 200.0f;
+float keyboardSensitivity = 5.0f;
 float mouseSensitivity = 0.5f;
 bool leftMouseButton = false;
 bool rightMouseButton = false;
@@ -437,7 +437,10 @@ void initPhysics() {
 	boost::geometry::centroid(tablePoints, tableCenter);
 
 	// Find the points of the lip that are above the table
-	boost::geometry::intersection(lipPoints, tablePoints, innerLipPoints);
+	for(auto pt : lipPoints.outer()) {
+		if (boost::geometry::within(pt, tablePoints))
+			innerLipPoints.push_back(pt);
+	}
 
 	// To make other functions better behaved, sort the points by their
 	//  angle from the center of the table
@@ -512,6 +515,27 @@ void initPhysics() {
 	boost::geometry::intersection(tableEdge, goalMask[0], tableSides[0]);
 	boost::geometry::intersection(tableEdge, goalMask[1], tableSides[1]);
 
+	// We also need to bind the paddles to their sides
+	std::vector<polygon> paddleSides(2), sideMask(2);
+
+	sideMask[0].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.min_corner().x - tableCenter.x),
+		       2.0f*(tableBounds.max_corner().y - tableCenter.y)} +
+		tableCenter);
+	sideMask[0].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.min_corner().x - tableCenter.x),
+		       -(goalWidthFraction)*(tableBounds.max_corner().y - tableCenter.y)} +
+		tableCenter);
+	sideMask[0].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.max_corner().x - tableCenter.x),
+		       -(goalWidthFraction)*(tableBounds.max_corner().y - tableCenter.y)} +
+		tableCenter);
+	sideMask[0].outer().push_back(
+		b2Vec2{2.0f*(tableBounds.max_corner().x - tableCenter.x),
+		       2.0f*(tableBounds.max_corner().y - tableCenter.y)} +
+		tableCenter);
+
+    // Puck
 	// Find the puck's radius by finding the point on the edge furthest from
 	//  the center
 	polygon puckPoints, puckEdge;
@@ -525,9 +549,7 @@ void initPhysics() {
 				puckBottom = std::min(puckBottom, pt.position[1]);
 			}
 		});
-
 	// TODO: Save this somewhere for resetting
-
 	puckY = tableHeight - puckBottom;
 
 	boost::geometry::convex_hull(puckPoints, puckEdge);
@@ -537,14 +559,12 @@ void initPhysics() {
 		puckRadius = std::max(puckRadius, b2Distance(pt, puckCenter));
 	}
 
-    // Setup physics
-    // Puck
     b2BodyDef puckBodyDef;
     b2CircleShape puckShape;
     b2FixtureDef fixtureDef;
 
     puckBodyDef.type = b2_dynamicBody;
-    puckBodyDef.linearDamping = 0.008f;
+    puckBodyDef.linearDamping = 0.001;
     puckBodyDef.position = tableCenter;
     phys::puck = phys::world.CreateBody(&puckBodyDef);
 
@@ -553,7 +573,7 @@ void initPhysics() {
     fixtureDef.shape = &puckShape;
     fixtureDef.density = 1.0f;
     fixtureDef.friction = 0.001f;
-    fixtureDef.restitution = 0.9f;
+    fixtureDef.restitution = 1.0f;
 
     phys::puck->CreateFixture(&fixtureDef);
 
@@ -580,6 +600,53 @@ void initPhysics() {
 		phys::table->CreateFixture(&tableSideShapes[i], 0.0f);
     }
 
+    // Paddles
+	// Find the paddle's radius by finding the point on the edge furthest from
+	//  the center
+	polygon paddlePoints, paddleEdge;
+	b2Vec2 paddleCenter;
+	GLfloat paddleBottom = 1000.0;
+	forChildModels(std::list<Model*>{Models::paddle1},
+		[&](Model &m) {
+			for (auto pt : m.geometry) {
+				paddlePoints.outer().push_back(
+						b2Vec2{pt.position[0], pt.position[2]});
+				paddleBottom = std::min(paddleBottom, pt.position[1]);
+			}
+		});
+	// TODO: Save this somewhere for resetting
+	paddleY = tableHeight - paddleBottom;
+
+	boost::geometry::convex_hull(paddlePoints, paddleEdge);
+	boost::geometry::centroid(paddleEdge, paddleCenter);
+	paddleRadius = 0;
+	for (auto pt : paddleEdge.outer()) {
+		paddleRadius = std::max(paddleRadius, b2Distance(pt, paddleCenter));
+	}
+
+    b2BodyDef paddleBodyDef[2];
+    b2CircleShape paddleShape;
+
+    paddleBodyDef[0].type = b2_dynamicBody;
+    paddleBodyDef[0].linearDamping = 0;
+    paddleBodyDef[0].position = 0.5*(tableCenter +
+    		b2Vec2{tableBounds.min_corner().x,tableCenter.y});
+    phys::paddle1 = phys::world.CreateBody(&paddleBodyDef[0]);
+    paddleBodyDef[1].type = b2_dynamicBody;
+    paddleBodyDef[1].linearDamping = 0;
+    paddleBodyDef[1].position = 0.5*(tableCenter +
+    		b2Vec2{tableBounds.max_corner().x,tableCenter.y});
+    phys::paddle2 = phys::world.CreateBody(&paddleBodyDef[1]);
+
+    paddleShape.m_radius = paddleRadius;
+
+    fixtureDef.shape = &paddleShape;
+    fixtureDef.density = 10000.0f;
+    fixtureDef.friction = 0.001f;
+    fixtureDef.restitution = 1.0f;
+
+    phys::paddle1->CreateFixture(&fixtureDef);
+    phys::paddle2->CreateFixture(&fixtureDef);
 }
 
 void initModels () {
@@ -617,6 +684,35 @@ void initModels () {
     Models::puck = &geometryRoot.back();
     Models::puck->modelMatrix = glm::scale(glm::mat4(1.0), glm::vec3(1,1,1));
     forChildModels(std::list<Model*>{Models::puck},
+    		[&](Model& m) {
+    			for (auto &pt : m.geometry) {
+    				pt.position[0] *= 0.1;
+    				pt.position[1] *= 0.1;
+    				pt.position[2] *= 0.1;
+    				pt = makeVertex(BLUE_PLASTIC,
+    						glm::vec3{pt.position[0],
+    					              pt.position[1],
+    					              pt.position[2]},
+							glm::vec3{pt.normal[0],
+									  pt.normal[1],
+									  pt.normal[2]});
+    			}
+    		});
+
+    //Paddles
+    static const aiScene* paddleScene = nullptr;
+    if (paddleScene == nullptr) {
+    	paddleScene = Importer.ReadFile("paddle.obj", aiProcess_Triangulate | aiProcess_FindInvalidData | aiProcess_FixInfacingNormals | aiProcess_GenSmoothNormals);
+    }
+    if (paddleScene == nullptr) {
+        std::cout << Importer.GetErrorString() << std::endl;
+        throw 0;
+    }
+    geometryRoot.emplace_back(convertAssimpScene(*paddleScene));
+    Models::paddle1 = &geometryRoot.back();
+    geometryRoot.emplace_back(convertAssimpScene(*paddleScene));
+    Models::paddle2 = &geometryRoot.back();
+    forChildModels(std::list<Model*>{Models::paddle1, Models::paddle2},
     		[&](Model& m) {
     			for (auto &pt : m.geometry) {
     				pt.position[0] *= 0.1;
@@ -831,16 +927,51 @@ void render()
     glutSwapBuffers();
 }
 
-
-void update() {
-    float dt = getDT();// if you have anything moving, use dt.
-
-    // Call functions that update based on what's going on
+void updateMatrices() {
     Models::puck->modelMatrix =
     		glm::translate(glm::mat4(1.0),
     				glm::vec3(phys::puck->GetPosition().x,
     						puckY,
     						phys::puck->GetPosition().y));
+    Models::paddle1->modelMatrix =
+    		glm::translate(glm::mat4(1.0),
+    				glm::vec3(phys::paddle1->GetPosition().x,
+    						paddleY,
+    						phys::paddle1->GetPosition().y));
+    Models::paddle2->modelMatrix =
+    		glm::translate(glm::mat4(1.0),
+    				glm::vec3(phys::paddle2->GetPosition().x,
+    						paddleY,
+    						phys::paddle2->GetPosition().y));
+}
+
+void update() {
+    float dt = getDT();// if you have anything moving, use dt.
+
+    b2Vec2 paddleVelocities[2] = {b2Vec2_zero, b2Vec2_zero};
+    if (specialKeys[GLUT_KEY_LEFT])
+    	paddleVelocities[0] += keyboardSensitivity*b2Vec2(1, 0);
+    if (specialKeys[GLUT_KEY_RIGHT])
+    	paddleVelocities[0] += keyboardSensitivity*b2Vec2(-1, 0);
+    if (specialKeys[GLUT_KEY_UP])
+    	paddleVelocities[0] += keyboardSensitivity*b2Vec2(0, 1);
+    if (specialKeys[GLUT_KEY_DOWN])
+    	paddleVelocities[0] += keyboardSensitivity*b2Vec2(0, -1);
+
+    if (keys['a'])
+    	paddleVelocities[1] += keyboardSensitivity*b2Vec2(1, 0);
+    if (keys['d'])
+    	paddleVelocities[1] += keyboardSensitivity*b2Vec2(-1, 0);
+    if (keys['w'])
+    	paddleVelocities[1] += keyboardSensitivity*b2Vec2(0, 1);
+    if (keys['s'])
+    	paddleVelocities[1] += keyboardSensitivity*b2Vec2(0, -1);
+    phys::paddle1->SetLinearVelocity(paddleVelocities[0]);
+    phys::paddle2->SetLinearVelocity(paddleVelocities[1]);
+
+    updateMatrices();
+
+    // Call functions that update based on what's going on
     phys::world.Step(dt, 8, 3);
 
     glutPostRedisplay();
