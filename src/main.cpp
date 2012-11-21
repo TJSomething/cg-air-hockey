@@ -23,6 +23,7 @@
 #include <boost/geometry/geometries/register/point.hpp>
 #include <boost/geometry/geometries/linestring.hpp>
 #include <boost/geometry/geometries/ring.hpp>
+#include <boost/geometry/geometries/box.hpp>
 #include <boost/geometry/multi/geometries/multi_point.hpp>
 #include <boost/geometry/views/box_view.hpp>
 
@@ -43,10 +44,12 @@
 
 BOOST_GEOMETRY_REGISTER_POINT_2D(b2Vec2, float32, cs::cartesian, x, y)
 
-typedef boost::geometry::model::polygon<b2Vec2> polygon;
 
 namespace fs = boost::filesystem;
 namespace gil = boost::gil;
+namespace geo = boost::geometry;
+
+typedef geo::model::polygon<b2Vec2> polygon;
 
 //--Data types
 //This object will define the attributes of a vertex(position, color, etc...)
@@ -88,10 +91,13 @@ namespace Models {
 }
 
 // Things that we need to know
-GLfloat puckY, paddleY;
+GLfloat puckY, paddleY, puckYStart, puckYVel = 0;
 const int LIGHT_COUNT = 1;
 GLfloat puckRadius, paddleRadius;
 const GLfloat goalWidthFraction = 0.3;
+GLfloat tableLeft, tableRight;
+b2Vec2 tableCenter;
+int score[2] = {0,0};
 
 //--Evil Global variables
 int w = 640, h = 480;// Window size
@@ -166,7 +172,7 @@ bool specialKeys[256];
 bool keys[256];
 int mouseX = 0, mouseY = 0;
 float keyboardSensitivity = 5.0f;
-float mouseSensitivity = 0.5f;
+float mouseSensitivity = 0.005f;
 bool leftMouseButton = false;
 bool rightMouseButton = false;
 
@@ -212,6 +218,7 @@ int main(int argc, char **argv)
     glutPassiveMotionFunc(passiveMotion);
     glutSpecialFunc(specialKey);
     glutSpecialUpFunc(specialKeyUp);
+    glutMouseFunc(mouse);
 
     // To get our textures and shaders, we should be in the executable directory
     fs::current_path(fs::path(argv[0]).parent_path());
@@ -391,13 +398,21 @@ void initVPMatrices() {
     mats::toWorld = glm::inverse(mats::projection * mats::view);
 }
 
+void resetPuck() {
+    puckY = puckYStart;
+    puckYVel = 0;
+    phys::puck->SetTransform(tableCenter, 0);
+    phys::puck->ApplyLinearImpulse(b2Vec2{.1,0.05}, phys::puck->GetWorldCenter());
+}
+
 void initPhysics() {
+    b2FixtureDef fixtureDef;
+
 	// Find the table's height
 	polygon tablePoints;
-	boost::geometry::model::ring<b2Vec2> tableEdge;
+	geo::model::ring<b2Vec2> tableEdge;
 	polygon lipPoints;
 	std::vector<b2Vec2> innerLipPoints;
-	b2Vec2 tableCenter;
 	std::set<GLfloat> tableHeights;
 	forChildModels(std::list<Model*>{Models::table},
 		[&](Model &m) {
@@ -432,14 +447,14 @@ void initPhysics() {
 	// Get the outside points of the surface
 	polygon tablePoints2 = tablePoints;
 	tablePoints.clear();
-	boost::geometry::convex_hull(tablePoints2, tablePoints);
+	geo::convex_hull(tablePoints2, tablePoints);
 
 	// Get center of the center of the table
-	boost::geometry::centroid(tablePoints, tableCenter);
+	geo::centroid(tablePoints, tableCenter);
 
 	// Find the points of the lip that are above the table
 	for(auto pt : lipPoints.outer()) {
-		if (boost::geometry::within(pt, tablePoints))
+		if (geo::within(pt, tablePoints))
 			innerLipPoints.push_back(pt);
 	}
 
@@ -451,10 +466,10 @@ void initPhysics() {
 				b2Vec2 diff2 = pt2 - tableCenter;
 				return atan2(diff1.y, diff1.x) < atan2(diff2.y, diff2.x);
 			});
-	boost::geometry::model::ring<b2Vec2> innerLip(innerLipPoints.begin(),
+	geo::model::ring<b2Vec2> innerLip(innerLipPoints.begin(),
 			innerLipPoints.end());
-	boost::geometry::correct(innerLip);
-	boost::geometry::convex_hull(innerLip, tableEdge);
+	geo::correct(innerLip);
+	geo::convex_hull(innerLip, tableEdge);
 
 	// We need to fix some table normals
 	forChildModels(std::list<Model*>{Models::table},
@@ -474,8 +489,8 @@ void initPhysics() {
     });
 
 	// Cut out the goals from the edge
-	boost::geometry::model::box<b2Vec2> tableBounds;
-	boost::geometry::envelope(tableEdge, tableBounds);
+	geo::model::box<b2Vec2> tableBounds;
+	geo::envelope(tableEdge, tableBounds);
 	polygon goalMask[2];
 
 	goalMask[0].outer().push_back(
@@ -513,8 +528,8 @@ void initPhysics() {
 		tableCenter);
 
 	std::vector<polygon> tableSides[2];
-	boost::geometry::intersection(tableEdge, goalMask[0], tableSides[0]);
-	boost::geometry::intersection(tableEdge, goalMask[1], tableSides[1]);
+	geo::intersection(tableEdge, goalMask[0], tableSides[0]);
+	geo::intersection(tableEdge, goalMask[1], tableSides[1]);
 
     // Rotate the arrays such that the insides don't block the puck
     std::stable_sort(tableSides[0][0].outer().begin(),
@@ -525,22 +540,23 @@ void initPhysics() {
 			[=](b2Vec2 pt1, b2Vec2 pt2){return pt1.x<pt2.x;});
 
 	// We also need to bind the paddles to their sides
-	boost::geometry::model::box<b2Vec2> sideMask[2];
-	polygon paddleSides[2];
+	geo::model::box<b2Vec2> sideMask[2];
+	std::vector<polygon> paddleSides[2];
 
 	sideMask[0].max_corner() = tableBounds.max_corner();
 	sideMask[0].min_corner() =
 			b2Vec2{tableCenter.x, tableBounds.min_corner().y};
-	boost::geometry::correct(sideMask[0]);
+	geo::correct(sideMask[0]);
 
 	sideMask[1].max_corner() =
 			b2Vec2{tableCenter.x, tableBounds.max_corner().y};
 	sideMask[1].min_corner() = tableBounds.max_corner();
-	boost::geometry::correct(sideMask[1]);
+	geo::correct(sideMask[1]);
 
-	for (int i = 0; i < 2; i++)
-		boost::geometry::intersection(tableEdge,
-				boost::geometry::box_view<boost::geometry::model::box<b2Vec2>>(sideMask[i]), paddleSides[i]);
+	for (int i = 0; i < 2; i++) {
+	    auto boxView = geo::box_view<geo::model::box<b2Vec2>>(sideMask[i]);
+		geo::intersection(tableEdge, sideMask[i], paddleSides[i]);
+	}
 
     // Puck
 	// Find the puck's radius by finding the point on the edge furthest from
@@ -556,11 +572,11 @@ void initPhysics() {
 				puckBottom = std::min(puckBottom, pt.position[1]);
 			}
 		});
-	// TODO: Save this somewhere for resetting
-	puckY = tableHeight - puckBottom;
 
-	boost::geometry::convex_hull(puckPoints, puckEdge);
-	boost::geometry::centroid(puckEdge, puckCenter);
+	puckYStart = tableHeight - puckBottom;
+
+	geo::convex_hull(puckPoints, puckEdge);
+	geo::centroid(puckEdge, puckCenter);
 	puckRadius = 0;
 	for (auto pt : puckEdge.outer()) {
 		puckRadius = std::max(puckRadius, b2Distance(pt, puckCenter));
@@ -568,7 +584,6 @@ void initPhysics() {
 
     b2BodyDef puckBodyDef;
     b2CircleShape puckShape;
-    b2FixtureDef fixtureDef;
 
     puckBodyDef.type = b2_dynamicBody;
     puckBodyDef.linearDamping = 0.001;
@@ -581,12 +596,12 @@ void initPhysics() {
     fixtureDef.density = 1.0f;
     fixtureDef.friction = 0.001f;
     fixtureDef.restitution = 1.0f;
+    fixtureDef.filter.categoryBits = 0x4;
+    fixtureDef.filter.maskBits = 0xa;
 
     phys::puck->CreateFixture(&fixtureDef);
 
-    // TODO: Refactor into resetPuck function
-    phys::puck->SetTransform(tableCenter, 0);
-    phys::puck->ApplyLinearImpulse(b2Vec2{.5,0.25}, phys::puck->GetWorldCenter());
+    resetPuck();
 
     // Table
     b2BodyDef tableBodyDef;
@@ -597,10 +612,20 @@ void initPhysics() {
     for (int i = 0; i < 2; i++) {
 		tableSideShapes[i].CreateChain(tableSides[i][0].outer().data(),
 				tableSides[i][0].outer().size());
-		phys::table->CreateFixture(&tableSideShapes[i], 0.0f);
-		paddleBoundaryShapes[i].CreateChain(paddleSides[i].outer().data(),
-				paddleSides[i].outer().size());
-		auto x = phys::table->CreateFixture(&paddleBoundaryShapes[i], 0.0f);
+        fixtureDef.shape = &tableSideShapes[i];
+        fixtureDef.density = 0.0;
+        fixtureDef.filter.categoryBits = 0x2;
+        fixtureDef.filter.maskBits = 0xf;
+		phys::table->CreateFixture(&fixtureDef);
+
+		paddleBoundaryShapes[i].CreateChain(paddleSides[i][0].outer().data(),
+				paddleSides[i][0].outer().size());
+		fixtureDef.shape = &paddleBoundaryShapes[i];
+        fixtureDef.density = 0.0;
+        fixtureDef.filter.categoryBits = 0x1;
+        fixtureDef.filter.maskBits = 0x8;
+		phys::table->CreateFixture(&fixtureDef);
+
     }
 
     // Paddles
@@ -620,8 +645,8 @@ void initPhysics() {
 	// TODO: Save this somewhere for resetting
 	paddleY = tableHeight - paddleBottom;
 
-	boost::geometry::convex_hull(paddlePoints, paddleEdge);
-	boost::geometry::centroid(paddleEdge, paddleCenter);
+	geo::convex_hull(paddlePoints, paddleEdge);
+	geo::centroid(paddleEdge, paddleCenter);
 	paddleRadius = 0;
 	for (auto pt : paddleEdge.outer()) {
 		paddleRadius = std::max(paddleRadius, b2Distance(pt, paddleCenter));
@@ -644,9 +669,11 @@ void initPhysics() {
     paddleShape.m_radius = paddleRadius;
 
     fixtureDef.shape = &paddleShape;
-    fixtureDef.density = 10000.0f;
+    fixtureDef.density = 0.5f;
     fixtureDef.friction = 0.001f;
     fixtureDef.restitution = 1.0f;
+    fixtureDef.filter.categoryBits = 0x8;
+    fixtureDef.filter.maskBits = 0xf;
 
     phys::paddle1->CreateFixture(&fixtureDef);
     phys::paddle2->CreateFixture(&fixtureDef);
@@ -970,31 +997,52 @@ void updateMatrices() {
     						phys::paddle2->GetPosition().y));
 }
 
-void update() {
-    float dt = getDT();// if you have anything moving, use dt.
+void updatePositions(GLfloat dt) {
+    static int previousMouseX = 0, previousMouseY = 0;
 
     b2Vec2 paddleVelocities[2] = {b2Vec2_zero, b2Vec2_zero};
     if (specialKeys[GLUT_KEY_LEFT])
-    	paddleVelocities[0] += keyboardSensitivity*b2Vec2(1, 0);
+        paddleVelocities[0] += keyboardSensitivity*b2Vec2(1, 0);
     if (specialKeys[GLUT_KEY_RIGHT])
-    	paddleVelocities[0] += keyboardSensitivity*b2Vec2(-1, 0);
+        paddleVelocities[0] += keyboardSensitivity*b2Vec2(-1, 0);
     if (specialKeys[GLUT_KEY_UP])
-    	paddleVelocities[0] += keyboardSensitivity*b2Vec2(0, 1);
+        paddleVelocities[0] += keyboardSensitivity*b2Vec2(0, 1);
     if (specialKeys[GLUT_KEY_DOWN])
-    	paddleVelocities[0] += keyboardSensitivity*b2Vec2(0, -1);
+        paddleVelocities[0] += keyboardSensitivity*b2Vec2(0, -1);
 
     if (keys['a'])
-    	paddleVelocities[1] += keyboardSensitivity*b2Vec2(1, 0);
+        paddleVelocities[1] += keyboardSensitivity*b2Vec2(1, 0);
     if (keys['d'])
-    	paddleVelocities[1] += keyboardSensitivity*b2Vec2(-1, 0);
+        paddleVelocities[1] += keyboardSensitivity*b2Vec2(-1, 0);
     if (keys['w'])
-    	paddleVelocities[1] += keyboardSensitivity*b2Vec2(0, 1);
+        paddleVelocities[1] += keyboardSensitivity*b2Vec2(0, 1);
     if (keys['s'])
-    	paddleVelocities[1] += keyboardSensitivity*b2Vec2(0, -1);
+        paddleVelocities[1] += keyboardSensitivity*b2Vec2(0, -1);
+
+    if (leftMouseButton) {
+        previousMouseX = mouseX;
+        previousMouseY = mouseY;
+        captureMouse = !captureMouse;
+        leftMouseButton = false;
+    }
+    b2Vec2 mouseMove = b2Vec2_zero;
+    if (captureMouse) {
+        paddleVelocities[1] +=
+                mouseSensitivity/dt*b2Vec2(mouseX-previousMouseX,
+                                           mouseY-previousMouseY);
+        previousMouseX = mouseX;
+        previousMouseY = mouseY;
+    }
+
     phys::paddle1->SetLinearVelocity(paddleVelocities[0]);
     phys::paddle2->SetLinearVelocity(paddleVelocities[1]);
+}
+
+void update() {
+    float dt = getDT();// if you have anything moving, use dt.
 
     updateMatrices();
+    updatePositions(dt);
 
     // Call functions that update based on what's going on
     phys::world.Step(dt, 8, 3);
