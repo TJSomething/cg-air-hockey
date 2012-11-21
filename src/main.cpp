@@ -403,7 +403,11 @@ void resetPuck() {
     puckY = puckYStart;
     puckYVel = 0;
     phys::puck->SetTransform(tableCenter, 0);
-    phys::puck->ApplyLinearImpulse(b2Vec2{.1,0.05}, phys::puck->GetWorldCenter());
+    phys::puck->ApplyLinearImpulse(
+            -1.5*phys::puck->GetMass()*phys::puck->GetLinearVelocity(), phys::puck->GetWorldCenter());
+    if (!matchOver)
+        phys::puck->ApplyLinearImpulse(
+                phys::puck->GetMass()*b2Vec2{2,1}, phys::puck->GetWorldCenter());
     matchOver = false;
 }
 
@@ -1059,10 +1063,12 @@ void checkForGoal() {
         if (phys::puck->GetPosition().x < tableLeft) {
             score[1]++;
             matchOver = true;
+            printf("%d/%d\n", score[1], score[0]);
         }
         if (phys::puck->GetPosition().x > tableRight) {
             score[0]++;
             matchOver = true;
+            printf("%d/%d\n", score[1], score[0]);
         }
     } else {
         if (puckY < -10.0) {
